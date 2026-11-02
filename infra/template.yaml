@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Taskwarrior sync storage and per-device sync users.
+
+Resources:
+  SyncBucket:
+    Type: AWS::S3::Bucket
+    # Task data outlives this stack. Deleting the stack leaves the bucket.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "taskwarrior-sync-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      # Touches old versions and stray delete markers only, never live objects.
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-noncurrent-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+            ExpiredObjectDeleteMarker: true
+
+  SyncBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SyncBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt SyncBucket.Arn
+              - !Sub "${SyncBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  SyncPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: svc-taskwarrior-sync
+      Path: /taskwarrior/
+      Description: Read and write the Taskwarrior sync bucket, nothing else.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: List
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt SyncBucket.Arn
+          - Sid: Objects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub "${SyncBucket.Arn}/*"
+
+  PersonalUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-taskwarrior-sync-per
+      Path: /taskwarrior/
+      ManagedPolicyArns:
+        - !Ref SyncPolicy
+
+  HarvardUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: svc-taskwarrior-sync-harvard
+      Path: /taskwarrior/
+      ManagedPolicyArns:
+        - !Ref SyncPolicy
+
+Outputs:
+  BucketName:
+    Value: !Ref SyncBucket
+  Region:
+    Value: !Ref AWS::Region
